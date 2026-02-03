@@ -44,7 +44,6 @@ Membangun middleware yang berfungsi sebagai jembatan antara **Talenta HR** (prod
 | Talenta HR | Data Source | Menyediakan employee data, payroll, attendance |
 | Middleware | Data Processor | Transform, generate PDF, encrypt |
 | Oracle HCM Cloud | Target System | Menerima dan memproses data payroll |
-| Third Party Payroll | External System | Calculate net pay, tax, deductions |
 
 ### 1.3 Scope
 
