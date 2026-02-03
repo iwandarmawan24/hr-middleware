@@ -1,0 +1,230 @@
+name: hris-demo
+
+services:
+  # ========== DATA SOURCE ==========
+  mock-talenta:
+    build:
+      context: ./services/mock-talenta
+      dockerfile: Dockerfile
+    container_name: hris-mock-talenta
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - MOCK_DELAY_MS=100
+    networks:
+      - hris-demo-net
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # ========== MIDDLEWARE ==========
+  middleware:
+    build:
+      context: ./services/middleware
+      dockerfile: Dockerfile
+    container_name: hris-middleware
+    ports:
+      - "3002:3002"
+    environment:
+      - ENVIRONMENT=demo
+      - NODE_ENV=development
+      - PORT=3002
+
+      # Talenta API
+      - TALENTA_API_URL=http://mock-talenta:3001
+      - TALENTA_ACCESS_TOKEN=demo-token
+      - TALENTA_COMPANY_ID=1
+
+      # Database
+      - DB_HOST=postgres-middleware
+      - DB_PORT=5432
+      - DB_NAME=hris_metadata
+      - DB_USER=hris
+      - DB_PASSWORD=hrispass
+
+      # Redis
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+
+      # SFTP
+      - SFTP_HOST=sftp-server
+      - SFTP_PORT=22
+      - SFTP_USER=hris
+      - SFTP_PASSWORD=hrispass
+      - SFTP_INBOUND_PATH=/data/inbound
+      - SFTP_ARCHIVE_PATH=/data/archive
+
+      # Encryption
+      - PGP_PUBLIC_KEY_PATH=/keys/oic_public.asc
+      - PGP_PRIVATE_KEY_PATH=/keys/oic_private.asc
+
+      # Storage
+      - TEMP_DIR=/tmp/hris
+      - OUTPUT_DIR=/data/output
+      - ARCHIVE_DIR=/data/archive
+
+      # Processing
+      - BUSINESS_UNIT=MY
+      - BATCH_SIZE=50
+
+      # Features
+      - USE_MOCK_TALENTA=true
+      - USE_MOCK_OIC=true
+      - SKIP_ENCRYPTION=false
+      - SKIP_UPLOAD=false
+    volumes:
+      - ./config/keys:/keys:ro
+      - sftp-data:/data
+    depends_on:
+      postgres-middleware:
+        condition: service_healthy
+      mock-talenta:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - hris-demo-net
+
+  # ========== MOCK OIC ==========
+  mock-oic:
+    build:
+      context: ./services/mock-oic
+      dockerfile: Dockerfile
+    container_name: hris-mock-oic
+    environment:
+      - WATCH_DIR=/data/inbound
+      - ARCHIVE_DIR=/data/archive
+      - TEMP_DIR=/tmp/oic
+      - PGP_PRIVATE_KEY_PATH=/keys/oic_private.asc
+
+      # Mock HCM Database
+      - DB_HOST=postgres-hcm
+      - DB_PORT=5432
+      - DB_NAME=mock_hcm
+      - DB_USER=hcm
+      - DB_PASSWORD=hcmpass
+    volumes:
+      - ./config/keys:/keys:ro
+      - sftp-data:/data
+    depends_on:
+      postgres-hcm:
+        condition: service_healthy
+    networks:
+      - hris-demo-net
+
+  # ========== DATABASES ==========
+  postgres-middleware:
+    image: postgres:16-alpine
+    container_name: hris-postgres-middleware
+    environment:
+      POSTGRES_USER: hris
+      POSTGRES_PASSWORD: hrispass
+      POSTGRES_DB: hris_metadata
+    volumes:
+      - ./database/middleware-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - postgres-middleware-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - hris-demo-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hris -d hris_metadata"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-hcm:
+    image: postgres:16-alpine
+    container_name: hris-postgres-hcm
+    environment:
+      POSTGRES_USER: hcm
+      POSTGRES_PASSWORD: hcmpass
+      POSTGRES_DB: mock_hcm
+    volumes:
+      - ./database/mock-hcm-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - postgres-hcm-data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    networks:
+      - hris-demo-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hcm -d mock_hcm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ========== REDIS ==========
+  redis:
+    image: redis:7-alpine
+    container_name: hris-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - hris-demo-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ========== SFTP SERVER ==========
+  sftp-server:
+    image: atmoz/sftp:alpine
+    container_name: hris-sftp
+    command: hris:hrispass:1000:1000:data
+    ports:
+      - "2222:22"
+    volumes:
+      - sftp-data:/home/hris/data
+    networks:
+      - hris-demo-net
+
+  # ========== VAULT (for secrets management) ==========
+  vault:
+    image: hashicorp/vault:1.15
+    container_name: hris-vault
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: devtoken
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    ports:
+      - "8200:8200"
+    cap_add:
+      - IPC_LOCK
+    volumes:
+      - vault-data:/vault/data
+    networks:
+      - hris-demo-net
+
+  # ========== UTILITIES ==========
+  adminer:
+    image: adminer:4
+    container_name: hris-adminer
+    ports:
+      - "8080:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres-middleware
+    networks:
+      - hris-demo-net
+
+networks:
+  hris-demo-net:
+    driver: bridge
+    name: hris-demo-network
+
+volumes:
+  postgres-middleware-data:
+    name: hris-postgres-middleware-data
+  postgres-hcm-data:
+    name: hris-postgres-hcm-data
+  redis-data:
+    name: hris-redis-data
+  sftp-data:
+    name: hris-sftp-data
+  vault-data:
+    name: hris-vault-data
